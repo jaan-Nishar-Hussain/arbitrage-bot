@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Opportunity {
+  id              String   @id @default(cuid())
+  
+  // Token information
+  baseToken       String   // Address of base token (e.g., WETH)
+  quoteToken      String   // Address of quote token (e.g., USDC)
+  baseTokenSymbol String?  // Symbol for easier reading
+  quoteTokenSymbol String? // Symbol for easier reading
+  
+  // DEX information
+  buyDex          String   // DEX where we buy (lower price)
+  sellDex         String   // DEX where we sell (higher price)
+  
+  // Trade details
+  amountIn        String   // Amount in (in wei/base units)
+  amountOut       String   // Expected amount out (in wei/base units)
+  
+  // Profit calculations
+  estimatedProfit String   // Estimated profit in wei
+  profitPercent   Float    // Profit percentage
+  gasEstimate     String   // Estimated gas cost in wei
+  netProfit       String   // Net profit after gas (in wei)
+  
+  // Market data
+  buyPrice        String   // Price on buy DEX
+  sellPrice       String   // Price on sell DEX
+  priceImpact     Float    // Price impact percentage
+  
+  // Arbitrage type
+  arbitrageType   ArbitrageType @default(SIMPLE)
+  
+  // For triangular arbitrage
+  intermediateToken String? // Address of intermediate token (for triangular)
+  tokenPath         String? // JSON array of token path
+  
+  // Metadata
+  blockNumber     BigInt?  // Block number when detected
+  gasPrice        String?  // Gas price at detection time
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("opportunities")
+  @@index([createdAt])
+  @@index([baseToken, quoteToken])
+  @@index([arbitrageType])
+  @@index([netProfit])
+}
+
+enum ArbitrageType {
+  SIMPLE      // A->B arbitrage between two DEXs
+  TRIANGULAR  // A->B->C->A arbitrage
+}
+
+model TokenPair {
+  id          String @id @default(cuid())
+  
+  tokenA      String
+  tokenB      String
+  
+  // Pair addresses on different DEXs
+  uniswapPair String?
+  sushiPair   String?
+  
+  // Token metadata
+  tokenASymbol String?
+  tokenBSymbol String?
+  tokenADecimals Int?
+  tokenBDecimals Int?
+  
+  // Tracking
+  isActive    Boolean @default(true)
+  lastChecked DateTime @default(now())
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([tokenA, tokenB])
+  @@map("token_pairs")
+}
+
+model SystemMetrics {
+  id                    String   @id @default(cuid())
+  
+  // Performance metrics
+  totalOpportunities    Int      @default(0)
+  profitableOpportunities Int    @default(0)
+  totalPotentialProfit  String   @default("0")
+  
+  // System status
+  lastArbitrageRun      DateTime?
+  averageRuntime        Float?   // Average runtime in milliseconds
+  errorCount            Int      @default(0)
+  
+  // Block tracking
+  lastProcessedBlock    BigInt?
+  
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  
+  @@map("system_metrics")
+}

@@ -1,0 +1,54 @@
+node_modules/
+dist/
+logs/
+*.log
+.env
+.env.local
+.env.production
+.DS_Store
+Thumbs.db
+
+# Database
+arbitrage.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# ESLint cache
+.eslintcache
+
+# Docker
+.dockerignore
+
+# Prisma
+prisma/migrations/dev.db*
