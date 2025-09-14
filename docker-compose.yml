@@ -26,27 +26,6 @@ services:
     networks:
       - arbitrage-network
 
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: arbitrage-app
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:password@postgres:5432/arbitrage_db
-      RPC_URL: ${RPC_URL}
-      LOG_LEVEL: info
-    ports:
-      - "3000:3000"
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./logs:/app/logs
-    networks:
-      - arbitrage-network
-    restart: unless-stopped
-
 volumes:
   postgres_data:
   redis_data:

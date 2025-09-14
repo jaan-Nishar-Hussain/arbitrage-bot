@@ -1,5 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-import { logger } from '@/utils/logger';
+import { PrismaClient } from "@prisma/client";
 
 // Singleton pattern for Prisma client
 class PrismaService {
@@ -9,23 +8,11 @@ class PrismaService {
     if (!PrismaService.instance) {
       PrismaService.instance = new PrismaClient({
         log: [
-          { level: 'query', emit: 'event' },
-          { level: 'error', emit: 'event' },
-          { level: 'info', emit: 'event' },
-          { level: 'warn', emit: 'event' },
+          { level: "query", emit: "stdout" },
+          { level: "error", emit: "stdout" },
+          { level: "info", emit: "stdout" },
+          { level: "warn", emit: "stdout" },
         ],
-      });
-
-      // Log database queries in development
-      if (process.env.NODE_ENV === 'development') {
-        PrismaService.instance.$on('query', (e) => {
-          logger.debug(`Query: ${e.query}`);
-          logger.debug(`Duration: ${e.duration}ms`);
-        });
-      }
-
-      PrismaService.instance.$on('error', (e) => {
-        logger.error('Database error:', e);
       });
     }
 
@@ -42,16 +29,16 @@ class PrismaService {
 export const prisma = PrismaService.getInstance();
 
 // Graceful shutdown
-process.on('beforeExit', async () => {
+process.on("beforeExit", async () => {
   await PrismaService.disconnect();
 });
 
-process.on('SIGINT', async () => {
+process.on("SIGINT", async () => {
   await PrismaService.disconnect();
   process.exit(0);
 });
 
-process.on('SIGTERM', async () => {
+process.on("SIGTERM", async () => {
   await PrismaService.disconnect();
   process.exit(0);
 });

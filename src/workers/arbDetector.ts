@@ -1,10 +1,10 @@
-import { DEXService, PairInfo } from '@/services/dex';
-import { SimulatorService } from '@/services/simulator';
-import { prisma } from '@/db/prismaClient';
-import { config } from '@/config';
-import { logger } from '@/utils/logger';
-import { BN, ZERO, formatTokenAmount, parseEther } from '@/utils/bn';
-import { ArbitrageType } from '@prisma/client';
+import { DEXService, PairInfo } from "@/services/dex";
+import { SimulatorService } from "@/services/simulator";
+import { prisma } from "@/db/prismaClient";
+import { config } from "@/config";
+import { logger } from "@/utils/logger";
+import { BN, ZERO, parseEther } from "@/utils/bn";
+import { ArbitrageType } from "@prisma/client";
 
 export interface ArbitrageOpportunity {
   baseToken: string;
@@ -47,27 +47,34 @@ export class ArbitrageDetector {
    */
   async detectOpportunities(): Promise<void> {
     const startTime = Date.now();
-    logger.info('Starting arbitrage detection...');
+    logger.info("Starting arbitrage detection...");
 
     try {
       // Get current block number
       const currentBlock = await this.dexService.getCurrentBlockNumber();
-      
+
       if (currentBlock <= this.lastProcessedBlock) {
-        logger.debug('No new blocks to process');
+        logger.debug("No new blocks to process");
         return;
       }
 
       // Detect simple arbitrage opportunities
       const simpleOpportunities = await this.detectSimpleArbitrage();
-      logger.info(`Found ${simpleOpportunities.length} simple arbitrage opportunities`);
+      logger.info(
+        `Found ${simpleOpportunities.length} simple arbitrage opportunities`
+      );
 
       // Detect triangular arbitrage opportunities
       const triangularOpportunities = await this.detectTriangularArbitrage();
-      logger.info(`Found ${triangularOpportunities.length} triangular arbitrage opportunities`);
+      logger.info(
+        `Found ${triangularOpportunities.length} triangular arbitrage opportunities`
+      );
 
       // Save opportunities to database
-      await this.saveOpportunities([...simpleOpportunities, ...triangularOpportunities]);
+      await this.saveOpportunities([
+        ...simpleOpportunities,
+        ...triangularOpportunities,
+      ]);
 
       // Update system metrics
       await this.updateSystemMetrics(
@@ -76,9 +83,16 @@ export class ArbitrageDetector {
         currentBlock
       );
 
-      this.lastProcessedBlock = currentBlock;
-      logger.info(`Arbitrage detection completed in ${Date.now() - startTime}ms`);
+      // Log rate limiter stats
+      const stats = this.dexService.getRateLimiterStats();
+      logger.info(
+        `Rate limiter stats - Queue: ${stats.queueLength}, Requests: ${stats.currentRequestCount}, Token cache: ${stats.tokenCacheSize}, Pair cache: ${stats.pairCacheSize}`
+      );
 
+      this.lastProcessedBlock = currentBlock;
+      logger.info(
+        `Arbitrage detection completed in ${Date.now() - startTime}ms`
+      );
     } catch (error) {
       logger.error(`Error in arbitrage detection: ${error}`);
       await this.updateErrorCount();
@@ -92,38 +106,66 @@ export class ArbitrageDetector {
     const opportunities: ArbitrageOpportunity[] = [];
     const tokenPairs = await this.getTokenPairs();
 
-    for (const { tokenA, tokenB } of tokenPairs) {
-      try {
-        // Get pair info from both DEXs
-        const [uniswapPair, sushiPair] = await Promise.all([
-          this.dexService.getPairInfo(config.dexes.uniswapV2.factory, tokenA, tokenB),
-          this.dexService.getPairInfo(config.dexes.sushiswap.factory, tokenA, tokenB),
-        ]);
+    // Process pairs in smaller batches to avoid overwhelming the rate limiter
+    const batchSize = 5;
+    for (let i = 0; i < tokenPairs.length; i += batchSize) {
+      const batch = tokenPairs.slice(i, i + batchSize);
 
-        if (!uniswapPair || !sushiPair) {
-          continue; // Skip if pair doesn't exist on both DEXs
+      const batchPromises = batch.map(async ({ tokenA, tokenB }) => {
+        try {
+          // Get pair info from both DEXs sequentially to reduce load
+          const uniswapPair = await this.dexService.getPairInfo(
+            config.dexes.uniswapV2.factory,
+            tokenA,
+            tokenB
+          );
+
+          if (!uniswapPair) {
+            return []; // Skip if pair doesn't exist on Uniswap
+          }
+
+          const sushiPair = await this.dexService.getPairInfo(
+            config.dexes.sushiswap.factory,
+            tokenA,
+            tokenB
+          );
+
+          if (!sushiPair) {
+            return []; // Skip if pair doesn't exist on SushiSwap
+          }
+
+          // Check arbitrage in both directions
+          const opportunities1 = await this.checkSimpleArbitrageDirection(
+            uniswapPair,
+            sushiPair,
+            config.dexes.uniswapV2.name,
+            config.dexes.sushiswap.name
+          );
+
+          const opportunities2 = await this.checkSimpleArbitrageDirection(
+            sushiPair,
+            uniswapPair,
+            config.dexes.sushiswap.name,
+            config.dexes.uniswapV2.name
+          );
+
+          return [...opportunities1, ...opportunities2];
+        } catch (error) {
+          logger.debug(`Error checking pair ${tokenA}/${tokenB}: ${error}`);
+          return [];
         }
+      });
 
-        // Check arbitrage in both directions
-        const opportunities1 = await this.checkSimpleArbitrageDirection(
-          uniswapPair,
-          sushiPair,
-          config.dexes.uniswapV2.name,
-          config.dexes.sushiswap.name
-        );
+      // Wait for batch to complete before processing next batch
+      const batchResults = await Promise.all(batchPromises);
+      opportunities.push(...batchResults.flat());
 
-        const opportunities2 = await this.checkSimpleArbitrageDirection(
-          sushiPair,
-          uniswapPair,
-          config.dexes.sushiswap.name,
-          config.dexes.uniswapV2.name
-        );
-
-        opportunities.push(...opportunities1, ...opportunities2);
-
-      } catch (error) {
-        logger.debug(`Error checking pair ${tokenA}/${tokenB}: ${error}`);
-      }
+      // Log progress
+      logger.debug(
+        `Processed batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
+          tokenPairs.length / batchSize
+        )}`
+      );
     }
 
     return opportunities;
@@ -146,11 +188,11 @@ export class ArbitrageDetector {
 
     // Try different amounts to find optimal
     const amounts = [
-      parseEther('0.1'),
-      parseEther('0.5'),
-      parseEther('1'),
-      parseEther('5'),
-      parseEther('10'),
+      parseEther("0.1"),
+      parseEther("0.5"),
+      parseEther("1"),
+      parseEther("5"),
+      parseEther("10"),
     ];
 
     for (const amountIn of amounts) {
@@ -166,7 +208,7 @@ export class ArbitrageDetector {
           gasEstimate
         );
 
-        if (resultAB && resultAB.netProfit > config.trading.minProfitWei) {
+        if (resultAB && BN(resultAB.netProfit) > config.trading.minProfitWei) {
           opportunities.push(resultAB);
         }
 
@@ -181,10 +223,9 @@ export class ArbitrageDetector {
           gasEstimate
         );
 
-        if (resultBA && resultBA.netProfit > config.trading.minProfitWei) {
+        if (resultBA && BN(resultBA.netProfit) > config.trading.minProfitWei) {
           opportunities.push(resultBA);
         }
-
       } catch (error) {
         logger.debug(`Error simulating arbitrage: ${error}`);
       }
@@ -221,17 +262,33 @@ export class ArbitrageDetector {
         quoteTokenSymbol = buyDexPair.tokenB.symbol;
 
         // Buy DEX: tokenA -> tokenB
-        if (buyDexPair.reserves.token0.toLowerCase() === baseToken.toLowerCase()) {
-          reservesA = [buyDexPair.reserves.reserve0, buyDexPair.reserves.reserve1];
+        if (
+          buyDexPair.reserves.token0.toLowerCase() === baseToken.toLowerCase()
+        ) {
+          reservesA = [
+            buyDexPair.reserves.reserve0,
+            buyDexPair.reserves.reserve1,
+          ];
         } else {
-          reservesA = [buyDexPair.reserves.reserve1, buyDexPair.reserves.reserve0];
+          reservesA = [
+            buyDexPair.reserves.reserve1,
+            buyDexPair.reserves.reserve0,
+          ];
         }
 
         // Sell DEX: tokenB -> tokenA
-        if (sellDexPair.reserves.token0.toLowerCase() === quoteToken.toLowerCase()) {
-          reservesB = [sellDexPair.reserves.reserve0, sellDexPair.reserves.reserve1];
+        if (
+          sellDexPair.reserves.token0.toLowerCase() === quoteToken.toLowerCase()
+        ) {
+          reservesB = [
+            sellDexPair.reserves.reserve0,
+            sellDexPair.reserves.reserve1,
+          ];
         } else {
-          reservesB = [sellDexPair.reserves.reserve1, sellDexPair.reserves.reserve0];
+          reservesB = [
+            sellDexPair.reserves.reserve1,
+            sellDexPair.reserves.reserve0,
+          ];
         }
       } else {
         // TokenB -> TokenA
@@ -241,17 +298,33 @@ export class ArbitrageDetector {
         quoteTokenSymbol = buyDexPair.tokenA.symbol;
 
         // Buy DEX: tokenB -> tokenA
-        if (buyDexPair.reserves.token0.toLowerCase() === baseToken.toLowerCase()) {
-          reservesA = [buyDexPair.reserves.reserve0, buyDexPair.reserves.reserve1];
+        if (
+          buyDexPair.reserves.token0.toLowerCase() === baseToken.toLowerCase()
+        ) {
+          reservesA = [
+            buyDexPair.reserves.reserve0,
+            buyDexPair.reserves.reserve1,
+          ];
         } else {
-          reservesA = [buyDexPair.reserves.reserve1, buyDexPair.reserves.reserve0];
+          reservesA = [
+            buyDexPair.reserves.reserve1,
+            buyDexPair.reserves.reserve0,
+          ];
         }
 
         // Sell DEX: tokenA -> tokenB
-        if (sellDexPair.reserves.token0.toLowerCase() === quoteToken.toLowerCase()) {
-          reservesB = [sellDexPair.reserves.reserve0, sellDexPair.reserves.reserve1];
+        if (
+          sellDexPair.reserves.token0.toLowerCase() === quoteToken.toLowerCase()
+        ) {
+          reservesB = [
+            sellDexPair.reserves.reserve0,
+            sellDexPair.reserves.reserve1,
+          ];
         } else {
-          reservesB = [sellDexPair.reserves.reserve1, sellDexPair.reserves.reserve0];
+          reservesB = [
+            sellDexPair.reserves.reserve1,
+            sellDexPair.reserves.reserve0,
+          ];
         }
       }
 
@@ -267,15 +340,26 @@ export class ArbitrageDetector {
       }
 
       // Apply safety margin
-      const adjustedProfit = result.profit * BN(Math.floor((1 - config.trading.safetyMargin) * 1000)) / BN(1000);
-      
+      const adjustedProfit =
+        (result.profit *
+          BN(Math.floor((1 - config.trading.safetyMargin) * 1000))) /
+        BN(1000);
+
       if (adjustedProfit <= ZERO) {
         return null;
       }
 
       // Calculate prices
-      const buyPrice = this.dexService.calculatePrice(buyDexPair.reserves, baseToken, quoteToken);
-      const sellPrice = this.dexService.calculatePrice(sellDexPair.reserves, baseToken, quoteToken);
+      const buyPrice = this.dexService.calculatePrice(
+        buyDexPair.reserves,
+        baseToken,
+        quoteToken
+      );
+      const sellPrice = this.dexService.calculatePrice(
+        sellDexPair.reserves,
+        baseToken,
+        quoteToken
+      );
 
       return {
         baseToken,
@@ -295,7 +379,6 @@ export class ArbitrageDetector {
         priceImpact: Math.max(result.priceImpactA, result.priceImpactB),
         arbitrageType: ArbitrageType.SIMPLE,
       };
-
     } catch (error) {
       logger.debug(`Error in arbitrage simulation: ${error}`);
       return null;
@@ -307,7 +390,12 @@ export class ArbitrageDetector {
    */
   private async detectTriangularArbitrage(): Promise<TriangularOpportunity[]> {
     const opportunities: TriangularOpportunity[] = [];
-    const tokens = [config.tokens.weth, config.tokens.usdc, config.tokens.usdt, config.tokens.dai];
+    const tokens = [
+      config.tokens.weth,
+      config.tokens.usdc,
+      config.tokens.usdt,
+      config.tokens.dai,
+    ];
 
     // Check all possible triangular paths
     for (let i = 0; i < tokens.length; i++) {
@@ -319,12 +407,18 @@ export class ArbitrageDetector {
             const tokenC = tokens[k];
 
             try {
-              const opportunity = await this.checkTriangularArbitrage(tokenA, tokenB, tokenC);
+              const opportunity = await this.checkTriangularArbitrage(
+                tokenA,
+                tokenB,
+                tokenC
+              );
               if (opportunity) {
                 opportunities.push(opportunity);
               }
             } catch (error) {
-              logger.debug(`Error checking triangular arbitrage ${tokenA}/${tokenB}/${tokenC}: ${error}`);
+              logger.debug(
+                `Error checking triangular arbitrage ${tokenA}/${tokenB}/${tokenC}: ${error}`
+              );
             }
           }
         }
@@ -345,9 +439,21 @@ export class ArbitrageDetector {
     try {
       // Get all three pairs (we'll use Uniswap for simplicity, but this can be extended)
       const [pairAB, pairBC, pairCA] = await Promise.all([
-        this.dexService.getPairInfo(config.dexes.uniswapV2.factory, tokenA, tokenB),
-        this.dexService.getPairInfo(config.dexes.uniswapV2.factory, tokenB, tokenC),
-        this.dexService.getPairInfo(config.dexes.uniswapV2.factory, tokenC, tokenA),
+        this.dexService.getPairInfo(
+          config.dexes.uniswapV2.factory,
+          tokenA,
+          tokenB
+        ),
+        this.dexService.getPairInfo(
+          config.dexes.uniswapV2.factory,
+          tokenB,
+          tokenC
+        ),
+        this.dexService.getPairInfo(
+          config.dexes.uniswapV2.factory,
+          tokenC,
+          tokenA
+        ),
       ]);
 
       if (!pairAB || !pairBC || !pairCA) {
@@ -357,14 +463,26 @@ export class ArbitrageDetector {
       const gasPrice = await this.dexService.getCurrentGasPrice();
       const gasEstimate = gasPrice * BN(config.trading.gasLimit * 3); // 3x gas for triangular
 
-      const amounts = [parseEther('0.1'), parseEther('1'), parseEther('10')];
+      const amounts = [parseEther("0.1"), parseEther("1"), parseEther("10")];
 
       for (const amountIn of amounts) {
         try {
           // Get reserves for A -> B -> C -> A path
-          const reservesAB = this.getDirectionalReserves(pairAB, tokenA, tokenB);
-          const reservesBC = this.getDirectionalReserves(pairBC, tokenB, tokenC);
-          const reservesCA = this.getDirectionalReserves(pairCA, tokenC, tokenA);
+          const reservesAB = this.getDirectionalReserves(
+            pairAB,
+            tokenA,
+            tokenB
+          );
+          const reservesBC = this.getDirectionalReserves(
+            pairBC,
+            tokenB,
+            tokenC
+          );
+          const reservesCA = this.getDirectionalReserves(
+            pairCA,
+            tokenC,
+            tokenA
+          );
 
           const result = SimulatorService.simulateTriangularArbitrage(
             amountIn,
@@ -375,10 +493,13 @@ export class ArbitrageDetector {
           );
 
           if (result.isProfitable) {
-            const adjustedProfit = result.profit * BN(Math.floor((1 - config.trading.safetyMargin) * 1000)) / BN(1000);
-            
+            const adjustedProfit =
+              (result.profit *
+                BN(Math.floor((1 - config.trading.safetyMargin) * 1000))) /
+              BN(1000);
+
             if (adjustedProfit > config.trading.minProfitWei) {
-              const [tokenAInfo, tokenBInfo, tokenCInfo] = await Promise.all([
+              const [tokenAInfo] = await Promise.all([
                 this.dexService.getTokenInfo(tokenA),
                 this.dexService.getTokenInfo(tokenB),
                 this.dexService.getTokenInfo(tokenC),
@@ -397,13 +518,13 @@ export class ArbitrageDetector {
                 profitPercent: result.profitPercent,
                 gasEstimate: gasEstimate.toString(),
                 netProfit: adjustedProfit.toString(),
-                buyPrice: '0', // Not applicable for triangular
-                sellPrice: '0', // Not applicable for triangular
+                buyPrice: "0", // Not applicable for triangular
+                sellPrice: "0", // Not applicable for triangular
                 priceImpact: Math.max(...result.priceImpacts),
                 arbitrageType: ArbitrageType.TRIANGULAR,
                 intermediateToken: tokenB,
                 tokenPath: [tokenA, tokenB, tokenC, tokenA],
-                amounts: result.amounts.map(a => a.toString()),
+                amounts: result.amounts.map((a) => a.toString()),
                 priceImpacts: result.priceImpacts,
               };
             }
@@ -423,7 +544,11 @@ export class ArbitrageDetector {
   /**
    * Get reserves in the correct direction for trading
    */
-  private getDirectionalReserves(pairInfo: PairInfo, tokenIn: string, tokenOut: string): [bigint, bigint] {
+  private getDirectionalReserves(
+    pairInfo: PairInfo,
+    tokenIn: string,
+    _tokenOut: string
+  ): [bigint, bigint] {
     if (pairInfo.reserves.token0.toLowerCase() === tokenIn.toLowerCase()) {
       return [pairInfo.reserves.reserve0, pairInfo.reserves.reserve1];
     } else {
@@ -436,7 +561,12 @@ export class ArbitrageDetector {
    */
   private async getTokenPairs(): Promise<{ tokenA: string; tokenB: string }[]> {
     // For now, return a hardcoded list of popular pairs
-    const tokens = [config.tokens.weth, config.tokens.usdc, config.tokens.usdt, config.tokens.dai];
+    const tokens = [
+      config.tokens.weth,
+      config.tokens.usdc,
+      config.tokens.usdt,
+      config.tokens.dai,
+    ];
     const pairs: { tokenA: string; tokenB: string }[] = [];
 
     for (let i = 0; i < tokens.length; i++) {
@@ -451,7 +581,9 @@ export class ArbitrageDetector {
   /**
    * Save opportunities to database
    */
-  private async saveOpportunities(opportunities: ArbitrageOpportunity[]): Promise<void> {
+  private async saveOpportunities(
+    opportunities: ArbitrageOpportunity[]
+  ): Promise<void> {
     if (opportunities.length === 0) return;
 
     try {
@@ -459,7 +591,7 @@ export class ArbitrageDetector {
       const gasPrice = await this.dexService.getCurrentGasPrice();
 
       await prisma.opportunity.createMany({
-        data: opportunities.map(opp => ({
+        data: opportunities.map((opp) => ({
           baseToken: opp.baseToken,
           quoteToken: opp.quoteToken,
           baseTokenSymbol: opp.baseTokenSymbol,
@@ -476,7 +608,7 @@ export class ArbitrageDetector {
           sellPrice: opp.sellPrice,
           priceImpact: opp.priceImpact,
           arbitrageType: opp.arbitrageType,
-          intermediateToken: opp.intermediateToken,
+          intermediateToken: opp.intermediateToken || null,
           tokenPath: opp.tokenPath ? JSON.stringify(opp.tokenPath) : null,
           blockNumber: BigInt(currentBlock),
           gasPrice: gasPrice.toString(),
@@ -501,13 +633,13 @@ export class ArbitrageDetector {
     try {
       const profitableCount = await prisma.opportunity.count({
         where: {
-          netProfit: { gt: '0' },
+          netProfit: { gt: "0" },
           createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // Last 24 hours
         },
       });
 
       await prisma.systemMetrics.upsert({
-        where: { id: 'main' },
+        where: { id: "main" },
         update: {
           totalOpportunities: { increment: opportunitiesCount },
           profitableOpportunities: { set: profitableCount },
@@ -516,7 +648,7 @@ export class ArbitrageDetector {
           lastProcessedBlock: BigInt(blockNumber),
         },
         create: {
-          id: 'main',
+          id: "main",
           totalOpportunities: opportunitiesCount,
           profitableOpportunities: profitableCount,
           lastArbitrageRun: new Date(),
@@ -535,12 +667,12 @@ export class ArbitrageDetector {
   private async updateErrorCount(): Promise<void> {
     try {
       await prisma.systemMetrics.upsert({
-        where: { id: 'main' },
+        where: { id: "main" },
         update: {
           errorCount: { increment: 1 },
         },
         create: {
-          id: 'main',
+          id: "main",
           errorCount: 1,
         },
       });

@@ -1,4 +1,4 @@
-import { ethers } from 'ethers';
+import { ethers } from "ethers";
 
 /**
  * BigNumber utility functions for handling large numbers in DeFi calculations
@@ -9,6 +9,7 @@ export const BN = ethers.getBigInt;
 export const ZERO = BN(0);
 export const ONE = BN(1);
 export const TWO = BN(2);
+export const PRECISION = BN("1000000000000000000"); // 1e18 for precision calculations
 
 // Common token decimals
 export const ETHER_DECIMALS = 18;
@@ -33,7 +34,7 @@ export function toBigInt(value: string | number | bigint): bigint {
  */
 export function safeDivide(numerator: bigint, denominator: bigint): bigint {
   if (denominator === ZERO) {
-    throw new Error('Division by zero');
+    throw new Error("Division by zero");
   }
   return numerator / denominator;
 }
@@ -49,7 +50,11 @@ export function calculatePercentage(value: bigint, total: bigint): number {
 /**
  * Format BigInt to readable string with decimals
  */
-export function formatTokenAmount(amount: bigint, decimals: number, precision: number = 4): string {
+export function formatTokenAmount(
+  amount: bigint,
+  decimals: number,
+  precision: number = 4
+): string {
   const formatted = formatUnits(amount, decimals);
   return parseFloat(formatted).toFixed(precision);
 }
@@ -87,7 +92,7 @@ export function max(a: bigint, b: bigint): bigint {
  */
 export function sqrt(value: bigint): bigint {
   if (value < ZERO) {
-    throw new Error('Cannot calculate square root of negative number');
+    throw new Error("Cannot calculate square root of negative number");
   }
   if (value === ZERO || value === ONE) {
     return value;

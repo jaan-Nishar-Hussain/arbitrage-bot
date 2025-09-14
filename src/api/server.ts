@@ -1,7 +1,8 @@
-import fastify, { FastifyInstance } from 'fastify';
-import { config } from '@/config';
-import { logger } from '@/utils/logger';
-import { opportunitiesRoutes } from './routes/opportunities';
+import fastify, { FastifyInstance } from "fastify";
+import { config } from "@/config";
+import { logger } from "@/utils/logger";
+import { opportunitiesRoutes } from "./routes/opportunities";
+import { prisma } from "@/db/prismaClient";
 
 export class ApiServer {
   private app: FastifyInstance;
@@ -11,10 +12,10 @@ export class ApiServer {
       logger: {
         level: config.api.logLevel,
         transport: {
-          target: 'pino-pretty',
+          target: "pino-pretty",
           options: {
             colorize: true,
-            translateTime: 'SYS:standard',
+            translateTime: "SYS:standard",
           },
         },
       },
@@ -26,18 +27,16 @@ export class ApiServer {
 
   private setupRoutes(): void {
     // Health check
-    this.app.get('/health', async (request, reply) => {
-      return { status: 'ok', timestamp: new Date().toISOString() };
+    this.app.get("/health", async () => {
+      return { status: "ok", timestamp: new Date().toISOString() };
     });
 
     // API status
-    this.app.get('/status', async (request, reply) => {
+    this.app.get("/status", async (_request, reply) => {
       try {
-        const { prisma } = await import('@/db/prismaClient');
-        
         // Get latest system metrics
         const metrics = await prisma.systemMetrics.findFirst({
-          where: { id: 'main' },
+          where: { id: "main" },
         });
 
         // Get recent opportunities count
@@ -50,13 +49,13 @@ export class ApiServer {
         // Get profitable opportunities count
         const profitableOpportunities = await prisma.opportunity.count({
           where: {
-            netProfit: { gt: '0' },
+            netProfit: { gt: "0" },
             createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // Last 24 hours
           },
         });
 
         return {
-          status: 'operational',
+          status: "operational",
           timestamp: new Date().toISOString(),
           metrics: {
             totalOpportunities: metrics?.totalOpportunities || 0,
@@ -69,24 +68,24 @@ export class ApiServer {
           },
         };
       } catch (error) {
-        logger.error('Error fetching status:', error);
+        logger.error("Error fetching status:", error);
         return reply.status(500).send({
-          status: 'error',
-          message: 'Failed to fetch system status',
+          status: "error",
+          message: "Failed to fetch system status",
         });
       }
     });
 
     // Register opportunities routes
-    this.app.register(opportunitiesRoutes, { prefix: '/api' });
+    this.app.register(opportunitiesRoutes, { prefix: "/api" });
   }
 
   private setupErrorHandlers(): void {
-    this.app.setErrorHandler(async (error, request, reply) => {
-      logger.error('API Error:', error);
-      
+    this.app.setErrorHandler(async (error, _request, reply) => {
+      logger.error("API Error:", error);
+
       return reply.status(500).send({
-        error: 'Internal Server Error',
+        error: "Internal Server Error",
         message: error.message,
         timestamp: new Date().toISOString(),
       });
@@ -94,7 +93,7 @@ export class ApiServer {
 
     this.app.setNotFoundHandler(async (request, reply) => {
       return reply.status(404).send({
-        error: 'Not Found',
+        error: "Not Found",
         message: `Route ${request.method} ${request.url} not found`,
         timestamp: new Date().toISOString(),
       });
@@ -105,12 +104,12 @@ export class ApiServer {
     try {
       await this.app.listen({
         port: config.api.port,
-        host: '0.0.0.0',
+        host: "0.0.0.0",
       });
-      
+
       logger.info(`API server started on port ${config.api.port}`);
     } catch (error) {
-      logger.error('Error starting server:', error);
+      logger.error("Error starting server:", error);
       process.exit(1);
     }
   }
@@ -118,9 +117,9 @@ export class ApiServer {
   async stop(): Promise<void> {
     try {
       await this.app.close();
-      logger.info('API server stopped');
+      logger.info("API server stopped");
     } catch (error) {
-      logger.error('Error stopping server:', error);
+      logger.error("Error stopping server:", error);
     }
   }
 
